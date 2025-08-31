@@ -1,2 +1,8 @@
-sqlalchemy
+SQLAlchemy
 alembic
+pandas
+requests_cache
+retry_requests
+openmeteo_requests
+streamlit
+apscheduler
