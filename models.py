@@ -1,6 +1,6 @@
 #Database Models for myweatherapp
 
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, CheckConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from config import DATABASE_URL
@@ -20,7 +20,11 @@ class WeatherData(Base):
 class TrackedCity(Base):
     __tablename__ = 'tracked_cities'
     id = Column(Integer, primary_key=True)
-    city = Column(String, nullable=False, unique=True, check="LENGTH(city) > 0")
+    city = Column(String, nullable=False, unique=True)
+    
+    __table_args__ = (
+        CheckConstraint('LENGTH(city) > 0', name='city_length_check'),
+    )
 
 #Create an engine and a session
 engine = create_engine(DATABASE_URL)

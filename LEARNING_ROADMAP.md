@@ -11,6 +11,26 @@ You'll build a weather tracking application with a Streamlit frontend, SQLite da
 - **API Integration**: OpenWeatherMap API (for weather data)
 - **Scheduling**: APScheduler (for automated data collection)
 
+## 🛠️ File Creation Order (Implementation Sequence)
+
+**Follow this exact order when creating your files:**
+
+1. **First**: `requirements.txt` - Define your dependencies
+2. **Second**: `config.py` - Set up configuration (database URL, etc.)
+3. **Third**: `models.py` - Create your database models (WeatherData, TrackedCity)
+4. **Fourth**: Initialize Alembic - Set up migration system
+5. **Fifth**: Create first migration - Generate tables from models
+6. **Sixth**: `weather_api.py` - Build API integration functions
+7. **Seventh**: `scheduler.py` - Create background data collection
+8. **Eighth**: `main.py` - Build Streamlit frontend
+9. **Final**: Test integration - Connect all components
+
+**Why this order matters:**
+- Config must exist before models (models import config)
+- Models must exist before migrations (migrations read models)
+- API functions needed before scheduler (scheduler uses API functions)
+- Database and API must work before frontend (frontend displays data)
+
 ## 🗺️ Learning Path & Implementation Phases
 
 ### Phase 1: Project Foundation (Day 1-2)
