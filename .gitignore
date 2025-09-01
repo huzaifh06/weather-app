@@ -15,4 +15,4 @@ alembic/versions/
 .cache/
 *.swp
 *.swo
-
+*.ipynb
