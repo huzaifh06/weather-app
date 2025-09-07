@@ -1,54 +1,97 @@
-#Using open-meteo API to get weather data
+# weather_api.py
+# Utilities to fetch Open-Meteo hourly temps and persist/read from DB.
 
-import openmeteo_requests
+from datetime import datetime
+from typing import List, Tuple, Optional
+
 import pandas as pd
+import openmeteo_requests
 import requests_cache
 from retry_requests import retry
 
-# Setup the Open-Meteo API client with cache and retry on error
-cache_session = requests_cache.CachedSession('.cache', expire_after = 3600)
-retry_session = retry(cache_session, retries = 5, backoff_factor = 0.2)
-openmeteo = openmeteo_requests.Client(session = retry_session)
+from sqlalchemy import create_engine, select, desc
+from sqlalchemy.orm import sessionmaker
 
-# Make sure all required weather variables are listed here
-# The order of variables in hourly or daily is important to assign them correctly below
-url = "https://api.open-meteo.com/v1/forecast"
-params = {
-	"latitude": 52.52,
-	"longitude": 13.41,
-	"hourly": "temperature_2m",
-}
-responses = openmeteo.weather_api(url, params=params)
+from models import Base, WeatherData, TrackedCity  
+from config import DATABASE_URL, TRACKED_CITIES                    
 
-# Process first location. Add a for-loop for multiple locations or weather models
-response = responses[0]
-print(f"Coordinates: {response.Latitude()}°N {response.Longitude()}°E")
-print(f"Elevation: {response.Elevation()} m asl")
-print(f"Timezone difference to GMT+0: {response.UtcOffsetSeconds()}s")
+# ---------- DB ----------
+engine = create_engine(DATABASE_URL, future=True)
+Base.metadata.create_all(engine)
+SessionLocal = sessionmaker(bind=engine, future=True)
 
-# Process hourly data. The order of variables needs to be the same as requested.
-hourly = response.Hourly()
-hourly_temperature_2m = hourly.Variables(0).ValuesAsNumpy()
+# ---------- Open-Meteo client ----------
+def _get_openmeteo_client():
+    cache_session = requests_cache.CachedSession(".cache", expire_after=3600)
+    retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
+    return openmeteo_requests.Client(session=retry_session)
 
-hourly_data = {"date": pd.date_range(
-	start = pd.to_datetime(hourly.Time(), unit = "s", utc = True),
-	end = pd.to_datetime(hourly.TimeEnd(), unit = "s", utc = True),
-	freq = pd.Timedelta(seconds = hourly.Interval()),
-	inclusive = "left"
-)}
+def fetch_hourly_dataframe(latitude: float, longitude: float) -> pd.DataFrame:
+    """Fetch hourly temperature_2m from Open-Meteo and return a DataFrame."""
+    client = _get_openmeteo_client()
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {"latitude": latitude, "longitude": longitude, "hourly": "temperature_2m"}
 
-hourly_data["temperature_2m"] = hourly_temperature_2m
+    responses = client.weather_api(url, params=params)
+    response = responses[0]
+    hourly = response.Hourly()
+    temps = hourly.Variables(0).ValuesAsNumpy()
 
-hourly_dataframe = pd.DataFrame(data = hourly_data)
-print("\nHourly data\n", hourly_dataframe)
+    idx = pd.date_range(
+        start=pd.to_datetime(hourly.Time(), unit="s", utc=True),
+        end=pd.to_datetime(hourly.TimeEnd(), unit="s", utc=True),
+        freq=pd.Timedelta(seconds=hourly.Interval()),
+        inclusive="left",
+    )
 
-# get weather data from open-meteo
-def get_weather_data(city):
-    url = f"https://api.open-meteo.com/v1/forecast"
-    params = {
-        "latitude": city["latitude"],
-        "longitude": city["longitude"],
-        "hourly": "temperature_2m",
-    }
-    responses = openmeteo.weather_api(url, params=params)
-    return responses[0]
+    df = pd.DataFrame({"timestamp": idx, "temperature": temps})
+    # store as naive UTC to match your models.DateTime
+    df["timestamp"] = df["timestamp"].dt.tz_convert("UTC").dt.tz_localize(None)
+    return df
+
+# ---------- DB helpers ----------
+def ensure_all_cities_tracked():
+    with SessionLocal() as session:
+        for city in TRACKED_CITIES.keys():
+            # Simple check: does city exist?
+            existing = session.execute(select(TrackedCity).where(TrackedCity.city == city)).first()
+            if not existing:
+                session.add(TrackedCity(city=city))
+        session.commit()
+
+
+def upsert_city_hourly(session, city: str, df: pd.DataFrame) -> int:
+    inserted = 0
+    for _, row in df.iterrows():
+        ts = row["timestamp"].to_pydatetime() if isinstance(row["timestamp"], pd.Timestamp) else row["timestamp"]
+        exists = session.execute(
+            select(WeatherData.id).where(WeatherData.city == city, WeatherData.timestamp == ts)
+        ).first()
+        if not exists:
+            session.add(WeatherData(city=city, temperature=float(row["temperature"]), timestamp=ts))
+            inserted += 1
+    return inserted
+
+def ingest_one(city: str, latitude: float, longitude: float) -> int:
+    """Fetch & store hourly temps for a single city. Returns inserted row count."""
+    df = fetch_hourly_dataframe(latitude, longitude)
+    with SessionLocal.begin() as session:
+        count = upsert_city_hourly(session, city, df)
+    return count
+
+def get_latest(city: str) -> Optional[Tuple[str, float, datetime]]:
+    """Return latest (city, temperature, timestamp) or None."""
+    with SessionLocal() as session:
+        row = session.execute(
+            select(WeatherData)
+            .where(WeatherData.city == city)
+            .order_by(desc(WeatherData.timestamp))
+            .limit(1)
+        ).scalar_one_or_none()
+        if not row:
+            return None
+        return (row.city, row.temperature, row.timestamp)
+
+def list_tracked_cities() -> List[str]:
+    with SessionLocal() as session:
+        return [c.city for c in session.execute(select(TrackedCity)).scalars().all()]
